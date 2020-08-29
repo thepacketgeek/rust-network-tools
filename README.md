@@ -8,11 +8,15 @@ A small collection of example network tools based off of similar examples with [
   - View sniffed ARP Requests & Replies on a network interface
 - `ArpRequest`
   - Send an ARP request for a given IP and print out the replied MAC address
+- `ArpCache`
+  - Ipv4 ARP cache with ARP request capabilities
+- `Routes`
+  - Ipv4/v6 Route Table with destination lookup (parsed from netstat)
 
 
 # Running the CLI
 
-```rust
+```sh
 cargo run -- --help
 network-tools 0.1.0
 
@@ -27,10 +31,11 @@ OPTIONS:
     -i, --interface <interface>    Interface name to bind to
 
 SUBCOMMANDS:
-    help               Prints this message or the help of the give
-    list-interfaces    List available Interfaces
-    monitor-arp        Monitor for ARP Request/Replies
-    request-arp        Send an ARP request for a given IP Address
+    help           Prints this message or the help of the given subcommand(s)
+    interfaces     List available Interfaces
+    monitor-arp    Monitor for ARP Request/Replies
+    request-arp    Send an ARP request for a given IP Address
+    route          List available Routes (or route for given destination IpAddr)
 ```
 
 ## Permissions
