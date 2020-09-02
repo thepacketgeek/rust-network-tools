@@ -58,7 +58,7 @@ fn main() {
                     println!(
                         "{} via {} [{}]",
                         dest,
-                        next_hop.gateway,
+                        next_hop.ip,
                         next_hop
                             .mac
                             .map(|mac| mac.to_string())
@@ -68,12 +68,13 @@ fn main() {
             } else {
                 for route in routes.routes() {
                     println!(
-                        "{}/{} via {} [{}]",
-                        route.0,
-                        route.1,
-                        route.2,
+                        "{}{} via {} [{}]",
+                        if route.is_gateway { "*" } else { "" },
+                        &route.prefix,
+                        route.next_hop.ip,
                         route
-                            .3
+                            .next_hop
+                            .mac
                             .map(|mac| mac.to_string())
                             .unwrap_or("--".to_owned())
                     );
