@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{anyhow, Context};
-use ipnetwork::{ipv4_mask_to_prefix, ipv6_mask_to_prefix, IpNetwork, Ipv6Network};
+use ip_network_table_deps_treebitmap::{address::Address, IpLookupTable};
+use ipnetwork::{ipv4_mask_to_prefix, ipv6_mask_to_prefix, IpNetwork, Ipv4Network, Ipv6Network};
 use pnet::datalink::{self, MacAddr, NetworkInterface};
-use treebitmap::{address::Address, IpLookupTable};
 
 use super::arp_cache::ArpCache;
 
@@ -21,6 +21,7 @@ pub struct Route {
 pub struct NextHop {
     pub ip: IpAddr,
     pub mac: Option<MacAddr>,
+    pub interface: Option<NetworkInterface>,
 }
 
 #[derive(Debug)]
@@ -51,8 +52,9 @@ impl Routes {
             .into_iter()
             .map(|iface| (iface.name.clone(), iface))
             .collect();
-        let v4rib = RouteParser::<Ipv4Addr>::parse()?;
-        let v6rib = RouteParser::<Ipv6Addr>::parse()?;
+        let iface_names: HashSet<&String> = ifaces.keys().collect();
+        let v4rib = RouteParser::<Ipv4Addr>::parse(&iface_names)?;
+        let v6rib = RouteParser::<Ipv6Addr>::parse(&iface_names)?;
 
         let caches = ifaces
             .iter()
@@ -70,14 +72,27 @@ impl Routes {
     pub fn lookup_gateway(&self, destination: IpAddr) -> Option<NextHop> {
         match destination {
             IpAddr::V4(addr) => {
-                if let Some((_prefix, _masklen, entry)) = self.v4rib.longest_match(addr) {
+                if let Some((prefix, masklen, entry)) = self.v4rib.longest_match(addr) {
                     if entry.next_hop.is_unspecified() {
+                        if let Ok(network) = Ipv4Network::new(prefix, masklen as u8) {
+                            if network.contains(addr) {
+                                return Some(NextHop {
+                                    ip: IpAddr::V4(addr),
+                                    mac: self.get_mac(&entry.interface, addr),
+                                    interface: self
+                                        .interfaces
+                                        .get(&entry.interface)
+                                        .map(|i| i.clone()),
+                                });
+                            }
+                        }
                         // Next hop is not specified (uses the default gateway)
                         if let Some(default_gw) = self.v4rib.exact_match(entry.next_hop, 0) {
                             let mac = self.get_mac(&default_gw.interface, default_gw.next_hop);
                             return Some(NextHop {
                                 ip: IpAddr::V4(default_gw.next_hop),
                                 mac,
+                                interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
                             });
                         }
                     }
@@ -85,19 +100,33 @@ impl Routes {
                     Some(NextHop {
                         ip: IpAddr::V4(entry.next_hop),
                         mac,
+                        interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
                     })
                 } else {
                     None
                 }
             }
             IpAddr::V6(addr) => {
-                if let Some((_prefix, _masklen, entry)) = self.v6rib.longest_match(addr) {
+                if let Some((prefix, masklen, entry)) = self.v6rib.longest_match(addr) {
                     if entry.next_hop.is_unspecified() {
+                        if let Ok(network) = Ipv6Network::new(prefix, masklen as u8) {
+                            if network.contains(addr) {
+                                return Some(NextHop {
+                                    ip: IpAddr::V6(addr),
+                                    mac: None,
+                                    interface: self
+                                        .interfaces
+                                        .get(&entry.interface)
+                                        .map(|i| i.clone()),
+                                });
+                            }
+                        }
                         // Next hop is not specified (uses the default gateway)
-                        if let Some(default_gw) = self.v6rib.exact_match(entry.next_hop, 0) {
+                        if let Some(default_gw) = self.v6rib.exact_match("::".parse().unwrap(), 0) {
                             return Some(NextHop {
                                 ip: IpAddr::V6(default_gw.next_hop),
                                 mac: None,
+                                interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
                             });
                         }
                     }
@@ -108,6 +137,7 @@ impl Routes {
                     Some(NextHop {
                         ip: IpAddr::V6(entry.next_hop),
                         mac,
+                        interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
                     })
                 } else {
                     None
@@ -132,6 +162,7 @@ impl Routes {
                 next_hop: NextHop {
                     ip: entry.next_hop.into(),
                     mac: self.get_mac(&entry.interface, entry.next_hop),
+                    interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
                 },
                 interface: entry.interface.clone(),
                 is_gateway: entry.is_gateway,
@@ -143,6 +174,7 @@ impl Routes {
                 next_hop: NextHop {
                     ip: entry.next_hop.into(),
                     mac: None,
+                    interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
                 },
                 interface: entry.interface.clone(),
                 is_gateway: entry.is_gateway,
@@ -161,12 +193,16 @@ where
 
 #[cfg(target_os = "linux")]
 impl RouteParser<Ipv4Addr> {
-    fn parse() -> anyhow::Result<IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>> {
+    fn parse(
+        interface_names: &HashSet<&String>,
+    ) -> anyhow::Result<IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>> {
         let mut rib = IpLookupTable::new();
         let output = get_netstat_output(4)?;
         for line in output.lines() {
             if let Ok((dest, masklen, entry)) = Self::parse_row(line) {
-                rib.insert(dest, masklen, entry);
+                if interface_names.contains(&entry.interface) {
+                    rib.insert(dest, masklen, entry);
+                }
             }
         }
 
@@ -199,21 +235,23 @@ impl RouteParser<Ipv4Addr> {
 
 #[cfg(target_os = "linux")]
 impl RouteParser<Ipv6Addr> {
-    fn parse() -> anyhow::Result<IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>> {
+    fn parse(
+        interface_names: &HashSet<&String>,
+    ) -> anyhow::Result<IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>> {
         let mut rib = IpLookupTable::new();
         let output = get_netstat_output(6)?;
         for line in output.lines() {
             if let Ok((dest, masklen, entry)) = Self::parse_row(line) {
-                rib.insert(dest, masklen, entry);
+                if interface_names.contains(&entry.interface) {
+                    rib.insert(dest, masklen, entry);
+                }
             }
         }
-
         Ok(rib)
     }
 
     fn parse_row(line: &str) -> anyhow::Result<(Ipv6Addr, u32, Entry<Ipv6Addr>)> {
         let words: Vec<_> = line.split_ascii_whitespace().collect();
-
         let dest: Ipv6Network = words[0]
             .parse()
             .map_err(|_| anyhow!("Couldn't parse Prefix"))?;
@@ -223,7 +261,7 @@ impl RouteParser<Ipv6Addr> {
             next_hop: words[1]
                 .parse()
                 .map_err(|_| anyhow!("Couldn't parse Gateway"))?,
-            interface: words[5].to_owned(),
+            interface: words[words.len() - 1].to_owned(),
             is_gateway: flags.contains('G'),
         };
         Ok((dest.ip(), mask.into(), entry))
@@ -256,6 +294,8 @@ Destination                    Next Hop                   Flag Met Ref Use If
 ::1/128                        ::                         U    256 1     0 lo
 2604:a880:2:d1::/64            ::                         U    256 3     4 eth0
 fe80::/64                      ::                         U    256 1     0 eth0
+3001:10:ab::6/128              ::                         U    256 1     0 wg0
+3001:10:ab::/64                ::                         U    1024 2     3 wg0
 ::/0                           2601:a10:2:dead::1         UG   1024 3384554 eth0
 ::1/128                        ::                         Un   0   4 46615 lo"#
         }
@@ -276,7 +316,23 @@ mod tests {
             .lookup_gateway("172.16.0.4".parse().unwrap())
             .unwrap();
 
+        assert_eq!(next_hop.ip, "172.16.0.4".parse::<IpAddr>().unwrap());
+
+        let next_hop = routes.lookup_gateway("4.2.2.1".parse().unwrap()).unwrap();
         assert_eq!(next_hop.ip, "172.16.0.1".parse::<IpAddr>().unwrap());
+
+        let next_hop = routes
+            .lookup_gateway("3001:10:ab::abcd:10".parse().unwrap())
+            .unwrap();
+        assert_eq!(
+            next_hop.ip,
+            "3001:10:ab::abcd:10".parse::<IpAddr>().unwrap()
+        );
+
+        let next_hop = routes
+            .lookup_gateway("2001::1:1:1:1".parse().unwrap())
+            .unwrap();
+        assert_eq!(next_hop.ip, "2601:a10:2:dead::1".parse::<IpAddr>().unwrap());
     }
 }
 // #[cfg(target_os = "macos")]
