@@ -1,7 +1,6 @@
 use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::arp::ArpOperations;
 use pnet::packet::icmpv6::{ndp as pnet_ndp, Icmpv6Packet, Icmpv6Types};
-use pnet::packet::Packet;
 use structopt::StructOpt;
 
 use network_tools::{arp, ndp, routes};
@@ -110,10 +109,10 @@ fn main() {
                         _ => return,
                     }
 
+                    if limit == 0 {
+                        break;
+                    }
                     limit -= 1;
-                }
-                if limit == 0 {
-                    break;
                 }
             }
         }
@@ -130,18 +129,52 @@ fn main() {
             loop {
                 for ndp in &mut monitor {
                     match ndp {
-                        ndp::NdpPacket::NeighborSolicitation { target } => {
-                            eprintln!("Neighbor Solicitation: asking about {}", target);
+                        ndp::NdpPacket::NeighborAdvertisement {
+                            src,
+                            src_mac,
+                            target,
+                        } => {
+                            eprintln!(
+                                "Neighbor Advert*: {} has mac {} (responding to {})",
+                                src, src_mac, target
+                            );
                         }
-                        ndp::NdpPacket::NeighborAdvertisement { target } => {
-                            eprintln!("Neighbor Advert*: asking about {}", target);
+                        ndp::NdpPacket::NeighborSolicitation {
+                            src,
+                            src_mac,
+                            target,
+                        } => {
+                            eprintln!(
+                                "Neighbor Solicitation: {} asking about {} (respond @ {})",
+                                src, target, src_mac
+                            );
+                        }
+                        ndp::NdpPacket::RouterSolicitation { src, src_mac } => {
+                            eprintln!(
+                                "Router Solicitation*: {} is asking (respond @ {})",
+                                src, src_mac
+                            );
+                        }
+                        ndp::NdpPacket::RouterAdvertisement {
+                            src,
+                            src_mac,
+                            prefixes,
+                        } => {
+                            let networks = prefixes
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<String>>()
+                                .join(", ");
+                            eprintln!(
+                                "Router Advert*: {} is advertising the prefixes: {} (via {})",
+                                src, networks, src_mac,
+                            );
                         }
                     }
-
+                    if limit == 0 {
+                        break;
+                    }
                     limit -= 1;
-                }
-                if limit == 0 {
-                    break;
                 }
             }
         }

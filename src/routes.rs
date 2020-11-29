@@ -335,41 +335,159 @@ mod tests {
         assert_eq!(next_hop.ip, "2601:a10:2:dead::1".parse::<IpAddr>().unwrap());
     }
 }
-// #[cfg(target_os = "macos")]
-// fn read_routes() -> io::Result<(Rib, Fib)> {
-//     let mut rib: Rib = HashMap::new();
-//     let mut fib: Fib = HashMap::new();
-//     let output = Command::new("netstat").args(&["-rnf", "inet"]).output()?;
-//     for line in String::from_utf8_lossy(&output.stdout).lines() {
-//         let words: Vec<_> = line.split_ascii_whitespace().collect();
-//         if words.len() < 4 {
-//             continue;
-//         }
-//         let dest = if let Some(dest) = parse_destination(&words[0]) {
-//             dest
-//         } else {
-//             continue;
-//         };
-//         eprintln!("Dest: {}", dest);
-//         // let gw = words[1];
-//         // let flags = words[2];
-//         // let iface = words[3];
-//     }
 
-//     Ok((rib, fib))
-// }
+#[cfg(target_os = "macos")]
+impl RouteParser<Ipv4Addr> {
+    fn parse(
+        interface_names: &HashSet<&String>,
+    ) -> anyhow::Result<IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>> {
+        let mut rib = IpLookupTable::new();
+        let output = get_netstat_output(4)?;
+        for line in output.lines() {
+            if let Ok((dest, masklen, entry)) = Self::parse_row(line) {
+                if interface_names.contains(&entry.interface) {
+                    rib.insert(dest, masklen, entry);
+                }
+            }
+        }
 
-// #[cfg(target_os = "macos")]
-// fn parse_destination(destination: &str) -> Option<IpNetwork> {
-//     let mut new_dest = destination.to_owned();
-//     if let Ok(dest) = destination.parse() {
-//         Some(dest)
-//     } else if destination == "default" {
-//         Some(IpNetwork::V4(
-//             Ipv4Network::new(Ipv4Addr::new(0, 0, 0, 0), 0).unwrap(),
-//         ))
-//     } else {
-//         eprintln!("Bad Dest: {}", destination);
-//         None
-//     }
-// }
+        Ok(rib)
+    }
+
+    fn parse_row(line: &str) -> anyhow::Result<(Ipv4Addr, u32, Entry<Ipv4Addr>)> {
+        let words: Vec<_> = line.split_ascii_whitespace().collect();
+
+        let dest = words[0]
+            .parse()
+            .map_err(|_| anyhow!("Couldn't parse Prefix"))?;
+        let gw = words[1]
+            .parse()
+            .map_err(|_| anyhow!("Couldn't parse Gateway"))?;
+        let mask = words[2]
+            .parse()
+            .map_err(|_| anyhow!("Couldn't parse Prefix mask"))
+            .and_then(|m| ipv4_mask_to_prefix(m).context("Converting mask to masklen"))
+            .map_err(|_| anyhow!("Couldn't parse Prefix mask"))?;
+        let flags = words[3];
+        let entry = Entry {
+            next_hop: gw,
+            interface: words[7].to_owned(),
+            is_gateway: flags.contains('G'),
+        };
+        Ok((dest, mask.into(), entry))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl RouteParser<Ipv6Addr> {
+    fn parse(
+        interface_names: &HashSet<&String>,
+    ) -> anyhow::Result<IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>> {
+        let mut rib = IpLookupTable::new();
+        let output = get_netstat_output(6)?;
+        for line in output.lines() {
+            if let Ok((dest, masklen, entry)) = Self::parse_row(line) {
+                if interface_names.contains(&entry.interface) {
+                    rib.insert(dest, masklen, entry);
+                }
+            }
+        }
+        Ok(rib)
+    }
+
+    fn parse_row(line: &str) -> anyhow::Result<(Ipv6Addr, u32, Entry<Ipv6Addr>)> {
+        let words: Vec<_> = line.split_ascii_whitespace().collect();
+        let dest: Ipv6Network = words[0]
+            .parse()
+            .map_err(|_| anyhow!("Couldn't parse Prefix"))?;
+        let mask = ipv6_mask_to_prefix(dest.mask())?;
+        let flags = words[2];
+        let entry = Entry {
+            next_hop: words[1]
+                .parse()
+                .map_err(|_| anyhow!("Couldn't parse Gateway"))?,
+            interface: words[words.len() - 1].to_owned(),
+            is_gateway: flags.contains('G'),
+        };
+        Ok((dest.ip(), mask.into(), entry))
+    }
+}
+
+#[cfg(not(test))]
+#[cfg(target_os = "macos")]
+fn get_netstat_output(ip_version: u8) -> io::Result<String> {
+    let output = std::process::Command::new("netstat")
+        .args(&[&format!("-rn{}", ip_version)])
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+fn get_netstat_output(ip_version: u8) -> io::Result<String> {
+    let output = match ip_version {
+        4 => {
+            r#"Routing tables
+
+Internet:
+Destination        Gateway            Flags        Netif Expire
+default            10.0.0.1           UGSc           en0
+10/24              link#4             UCS            en0      !
+10.0.0.1/32        link#4             UCS            en0      !
+10.0.0.1           00:11:22:aa:bb:cc  UHLWIir        en0   1163
+10.0.0.6           00:11:22:cc:dd:ee  UHLWI          en0   1190
+127                127.0.0.1          UCS            lo0
+127.0.0.1          127.0.0.1          UH             lo0
+169.254            link#4             UCS            en0      !
+224.0.0/4          link#4             UmCS           en0      !
+224.0.0.251        1:0:5e:0:0:fb      UHmLWI         en0
+239.255.255.250    1:0:5e:7f:ff:fa    UHmLWI         en0
+255.255.255.255/32 link#4             UCS            en0      !
+255.255.255.255    ff:ff:ff:ff:ff:ff  UHLWbI         en0      !"#
+        }
+        6 => {
+            r#"Routing tables
+
+Internet6:
+Destination                             Gateway                         Flags         Netif Expire
+default                                 fe80::0000:efff:fe66:1337%en0   UGc             en0
+::1                                     ::1                             UHL             lo0
+2601:10:20::/64                 link#4                          UC              en0
+2601:10:20::df00                ba:dc:fe:c0:d1:e2               UHLWIi          en0"#
+        }
+        _ => unimplemented!(),
+    };
+    Ok(output.to_string())
+}
+
+#[cfg(target_os = "macos")]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse() {
+        let routes = Routes::new().unwrap();
+        let next_hop = routes
+            .lookup_gateway("172.16.0.4".parse().unwrap())
+            .unwrap();
+
+        assert_eq!(next_hop.ip, "172.16.0.4".parse::<IpAddr>().unwrap());
+
+        let next_hop = routes.lookup_gateway("4.2.2.1".parse().unwrap()).unwrap();
+        assert_eq!(next_hop.ip, "172.16.0.1".parse::<IpAddr>().unwrap());
+
+        let next_hop = routes
+            .lookup_gateway("3001:10:ab::abcd:10".parse().unwrap())
+            .unwrap();
+        assert_eq!(
+            next_hop.ip,
+            "3001:10:ab::abcd:10".parse::<IpAddr>().unwrap()
+        );
+
+        let next_hop = routes
+            .lookup_gateway("2001::1:1:1:1".parse().unwrap())
+            .unwrap();
+        assert_eq!(next_hop.ip, "2601:a10:2:dead::1".parse::<IpAddr>().unwrap());
+    }
+}

@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::io;
 use std::net::Ipv6Addr;
 
+use ipnetwork::Ipv6Network;
 use pnet::datalink::{self, Channel, MacAddr, NetworkInterface};
 use pnet::packet::icmpv6::{ndp as pnet_ndp, Icmpv6Packet, Icmpv6Type, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
@@ -12,11 +13,26 @@ use pnet::packet::{
 };
 
 pub enum NdpPacket {
+    /// Link Layer Request
     NeighborSolicitation {
+        src: Ipv6Addr,
+        src_mac: MacAddr,
         target: Ipv6Addr,
     },
+    /// Link Layer Node Response ()
     NeighborAdvertisement {
-        target: Ipv6Addr, /*, mac: MacAddr */
+        src: Ipv6Addr,
+        src_mac: MacAddr,
+        target: Ipv6Addr,
+    },
+    RouterAdvertisement {
+        src: Ipv6Addr,
+        src_mac: MacAddr,
+        prefixes: Vec<Ipv6Network>,
+    },
+    RouterSolicitation {
+        src: Ipv6Addr,
+        src_mac: MacAddr,
     },
 }
 
@@ -49,7 +65,7 @@ impl NdpMonitor {
         })
     }
 
-    // pub fn send_request(&self, addr: Ipv4Addr) -> io::Result<()> {
+    // pub fn send_solicitation(&self, addr: Ipv4Addr) -> io::Result<()> {
     //     let mut tx = self.tx.borrow_mut();
     //     let request = build_request(&self.interface, addr)?;
     //     match tx.send_to(request.packet(), None) {
@@ -88,34 +104,88 @@ fn extract_ndp_packet<'a>(ethernet: &EthernetPacket<'a>) -> Option<NdpPacket> {
     Ipv6Packet::new(ethernet.payload()).and_then(|ipv6| match ipv6.get_next_header() {
         IpNextHeaderProtocols::Icmpv6 => {
             Icmpv6Packet::new(ipv6.payload()).and_then(|icmpv6| match icmpv6.get_icmpv6_type() {
-                Icmpv6Types::NeighborSolicit => {
-                    pnet_ndp::NeighborSolicitPacket::new(icmpv6.payload()).and_then(|ns| {
-                        Some(NdpPacket::NeighborSolicitation {
-                            // src: ipv6.get_source(),
-                            target: ns.get_target_addr(),
+                Icmpv6Types::NeighborAdvert => pnet_ndp::NeighborAdvertPacket::new(ipv6.payload())
+                    .and_then(|na| {
+                        Some(NdpPacket::NeighborAdvertisement {
+                            src: ipv6.get_source(),
+                            src_mac: ethernet.get_source(),
+                            target: na.get_target_addr(),
                         })
-                    })
-                }
-                Icmpv6Types::NeighborAdvert => {
-                    pnet_ndp::NeighborAdvertPacket::new(icmpv6.payload()).and_then(|na| {
-                        for opt in na.get_options() {
-                            if opt.option_type == pnet_ndp::NdpOptionTypes::TargetLLAddr {
-                                dbg!(&opt);
-                                return Some(NdpPacket::NeighborAdvertisement {
-                                    // src: ipv6.get_source(),
-                                    target: na.get_target_addr(),
-                                    // mac: na.get_,
-                                });
-                            }
+                    }),
+                Icmpv6Types::NeighborSolicit => {
+                    pnet_ndp::NeighborSolicitPacket::new(ipv6.payload()).and_then(|ns| {
+                        if let Some(src_mac) = extract_ndp_mac(
+                            &ns.get_options(),
+                            pnet_ndp::NdpOptionTypes::SourceLLAddr,
+                        ) {
+                            Some(NdpPacket::NeighborSolicitation {
+                                src: ipv6.get_source(),
+                                target: ns.get_target_addr(),
+                                src_mac,
+                            })
+                        } else {
+                            None
                         }
-                        None
                     })
                 }
+                Icmpv6Types::RouterAdvert => pnet_ndp::RouterAdvertPacket::new(ipv6.payload())
+                    .and_then(|ra| {
+                        if let Some(src_mac) = extract_ndp_mac(
+                            &ra.get_options(),
+                            pnet_ndp::NdpOptionTypes::SourceLLAddr,
+                        ) {
+                            return Some(NdpPacket::RouterAdvertisement {
+                                src: ipv6.get_source(),
+                                src_mac,
+                                prefixes: extract_ndp_prefixes(&ra.get_options()),
+                            });
+                        } else {
+                            None
+                        }
+                    }),
+                Icmpv6Types::RouterSolicit => pnet_ndp::RouterSolicitPacket::new(ipv6.payload())
+                    .and_then(|_rs| {
+                        Some(NdpPacket::RouterSolicitation {
+                            src: ipv6.get_source(),
+                            src_mac: ethernet.get_source(),
+                        })
+                    }),
                 _ => None,
             })
         }
         _ => None,
     })
+}
+
+fn extract_ndp_mac(
+    options: &Vec<pnet_ndp::NdpOption>,
+    option_type: pnet_ndp::NdpOptionType,
+) -> Option<MacAddr> {
+    for opt in options {
+        if opt.option_type == option_type {
+            let d = &opt.data;
+            return Some(MacAddr::new(d[0], d[1], d[2], d[3], d[4], d[5]));
+        }
+    }
+    None
+}
+
+fn extract_ndp_prefixes(options: &Vec<pnet_ndp::NdpOption>) -> Vec<Ipv6Network> {
+    let mut prefixes = Vec::with_capacity(2);
+    for opt in options {
+        if opt.option_type == pnet_ndp::NdpOptionTypes::PrefixInformation {
+            let d = &opt.data;
+            let mask = d[0];
+            let addr_bytes: [u8; 16] = [
+                d[14], d[15], d[16], d[17], d[18], d[19], d[20], d[21], d[22], d[23], d[24], d[25],
+                d[26], d[27], d[28], d[29],
+            ];
+            if let Ok(network) = Ipv6Network::new(addr_bytes.into(), mask) {
+                prefixes.push(network);
+            }
+        }
+    }
+    prefixes
 }
 /*
 /// NdpRequest is used to send an Ndp Requests and wait for the reply
