@@ -10,6 +10,12 @@ A small collection of example network tools based off of similar examples with [
   - Send an ARP request for a given IP and print out the replied MAC address
 - `ArpCache`
   - Ipv4 ARP cache with ARP request capabilities
+- `NdpMonitor`
+  - View sniffed NDP Solicitations & Acknowledgements on a network interface
+- `NdpRequest`
+  - Send an NDP solicitation for a given IP and print out the replied MAC address
+- `NdpCache`
+  - Ipv6 NDP cache with NDP request capabilities
 - `Routes`
   - Ipv4/v6 Route Table with destination lookup (parsed from netstat)
 
@@ -34,7 +40,9 @@ SUBCOMMANDS:
     help           Prints this message or the help of the given subcommand(s)
     interfaces     List available Interfaces
     monitor-arp    Monitor for ARP Request/Replies
-    request-arp    Send an ARP request for a given IP Address
+    monitor-ndp
+    request-arp    Send an ARP request for a given IPv4 Address
+    request-ndp    Send an NDP request for a given IPv6 Address
     route          List available Routes (or route for given destination IpAddr)
 ```
 

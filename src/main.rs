@@ -2,7 +2,7 @@ use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::arp::ArpOperations;
 use structopt::StructOpt;
 
-use network_tools::{arp, routes};
+use network_tools::{arp, ndp, routes};
 
 #[derive(Debug, StructOpt)]
 struct Args {
@@ -27,8 +27,15 @@ pub enum Command {
         /// Monitor until up to this many ARP packets seen
         count: usize,
     },
-    /// Send an ARP request for a given IP Address
+    /// Send an ARP request for a given IPv4 Address
     RequestArp { address: std::net::Ipv4Addr },
+    MonitorNdp {
+        #[structopt(short, long, default_value = "10")]
+        /// Monitor until up to this many NDP packets seen
+        count: usize,
+    },
+    /// Send an NDP request for a given IPv6 Address
+    RequestNdp { address: std::net::Ipv6Addr },
 }
 
 fn main() {
@@ -101,16 +108,78 @@ fn main() {
                         _ => return,
                     }
 
+                    if limit == 0 {
+                        break;
+                    }
                     limit -= 1;
-                }
-                if limit == 0 {
-                    break;
                 }
             }
         }
         Command::RequestArp { address } => {
             let interface = get_interface(interfaces, args.interface.as_ref());
             let requester = arp::ArpRequest::new(&interface, address);
+            let hw_addr = requester.request().unwrap();
+            eprintln!("{} has MAC Address {}", address, hw_addr);
+        }
+        Command::MonitorNdp { count } => {
+            let interface = get_interface(interfaces, args.interface.as_ref());
+            let mut monitor = ndp::NdpMonitor::new(&interface).unwrap();
+            let mut limit = count;
+            loop {
+                for ndp in &mut monitor {
+                    match ndp {
+                        ndp::NdpPacket::NeighborAdvertisement {
+                            src,
+                            src_mac,
+                            target,
+                        } => {
+                            eprintln!(
+                                "Neighbor Advert*: {} has mac {} (responding to {})",
+                                src, src_mac, target
+                            );
+                        }
+                        ndp::NdpPacket::NeighborSolicitation {
+                            src,
+                            src_mac,
+                            target,
+                        } => {
+                            eprintln!(
+                                "Neighbor Solicitation: {} asking about {} (respond @ {})",
+                                src, target, src_mac
+                            );
+                        }
+                        ndp::NdpPacket::RouterSolicitation { src, src_mac } => {
+                            eprintln!(
+                                "Router Solicitation*: {} is asking (respond @ {})",
+                                src, src_mac
+                            );
+                        }
+                        ndp::NdpPacket::RouterAdvertisement {
+                            src,
+                            src_mac,
+                            prefixes,
+                        } => {
+                            let networks = prefixes
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<String>>()
+                                .join(", ");
+                            eprintln!(
+                                "Router Advert*: {} is advertising the prefixes: {} (via {})",
+                                src, networks, src_mac,
+                            );
+                        }
+                    }
+                    if limit == 0 {
+                        break;
+                    }
+                    limit -= 1;
+                }
+            }
+        }
+        Command::RequestNdp { address } => {
+            let interface = get_interface(interfaces, args.interface.as_ref());
+            let requester = ndp::NdpRequest::new(&interface, address);
             let hw_addr = requester.request().unwrap();
             eprintln!("{} has MAC Address {}", address, hw_addr);
         }

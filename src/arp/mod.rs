@@ -11,6 +11,9 @@ use pnet::packet::{
 
 use super::find_ipv4_addr;
 
+pub mod cache;
+pub use cache::ArpCache;
+
 /// ArpMonitor is used to listen for ARP Requests/Replies on a given interface
 pub struct ArpMonitor {
     interface: NetworkInterface,
