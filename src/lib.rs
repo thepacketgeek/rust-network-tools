@@ -3,11 +3,11 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use pnet::datalink::{MacAddr, NetworkInterface};
 
-/// ARP functions like monitoring & making requests
+/// ARP functions like monitoring & making requests, and an ArpCache
 pub mod arp;
 
-/// ARP Cache
-pub mod arp_cache;
+/// NDP functions like monitoring & making requests, and an NdpCache
+pub mod ndp;
 
 /// Routing/Forwarding Table Lookup
 pub mod routes;

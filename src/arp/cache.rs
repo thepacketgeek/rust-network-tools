@@ -6,7 +6,7 @@ use std::time::Duration;
 use pnet::datalink::{MacAddr, NetworkInterface};
 use pnet::packet::arp::ArpOperations;
 
-use super::arp::ArpMonitor;
+use super::ArpMonitor;
 
 pub struct ArpCache {
     entries: Arc<Mutex<HashMap<Ipv4Addr, MacAddr>>>,

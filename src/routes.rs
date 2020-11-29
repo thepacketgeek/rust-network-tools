@@ -7,7 +7,7 @@ use ip_network_table_deps_treebitmap::{address::Address, IpLookupTable};
 use ipnetwork::{ipv4_mask_to_prefix, ipv6_mask_to_prefix, IpNetwork, Ipv4Network, Ipv6Network};
 use pnet::datalink::{self, MacAddr, NetworkInterface};
 
-use super::arp_cache::ArpCache;
+use super::arp::ArpCache;
 
 #[derive(Debug)]
 pub struct Route {

@@ -1,8 +1,10 @@
 use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::arp::ArpOperations;
+use pnet::packet::icmpv6::{ndp as pnet_ndp, Icmpv6Packet, Icmpv6Types};
+use pnet::packet::Packet;
 use structopt::StructOpt;
 
-use network_tools::{arp, routes};
+use network_tools::{arp, ndp, routes};
 
 #[derive(Debug, StructOpt)]
 struct Args {
@@ -27,8 +29,15 @@ pub enum Command {
         /// Monitor until up to this many ARP packets seen
         count: usize,
     },
-    /// Send an ARP request for a given IP Address
+    /// Send an ARP request for a given IPv4 Address
     RequestArp { address: std::net::Ipv4Addr },
+    MonitorNdp {
+        #[structopt(short, long, default_value = "10")]
+        /// Monitor until up to this many NDP packets seen
+        count: usize,
+    },
+    // /// Send an NDP request for a given IPv6 Address
+    // RequestNdp { address: std::net::Ipv6Addr },
 }
 
 fn main() {
@@ -113,6 +122,28 @@ fn main() {
             let requester = arp::ArpRequest::new(&interface, address);
             let hw_addr = requester.request().unwrap();
             eprintln!("{} has MAC Address {}", address, hw_addr);
+        }
+        Command::MonitorNdp { count } => {
+            let interface = get_interface(interfaces, args.interface.as_ref());
+            let mut monitor = ndp::NdpMonitor::new(&interface).unwrap();
+            let mut limit = count;
+            loop {
+                for ndp in &mut monitor {
+                    match ndp {
+                        ndp::NdpPacket::NeighborSolicitation { target } => {
+                            eprintln!("Neighbor Solicitation: asking about {}", target);
+                        }
+                        ndp::NdpPacket::NeighborAdvertisement { target } => {
+                            eprintln!("Neighbor Advert*: asking about {}", target);
+                        }
+                    }
+
+                    limit -= 1;
+                }
+                if limit == 0 {
+                    break;
+                }
+            }
         }
     }
 }
