@@ -1,6 +1,5 @@
 use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::arp::ArpOperations;
-use pnet::packet::icmpv6::{ndp as pnet_ndp, Icmpv6Packet, Icmpv6Types};
 use structopt::StructOpt;
 
 use network_tools::{arp, ndp, routes};
@@ -35,8 +34,8 @@ pub enum Command {
         /// Monitor until up to this many NDP packets seen
         count: usize,
     },
-    // /// Send an NDP request for a given IPv6 Address
-    // RequestNdp { address: std::net::Ipv6Addr },
+    /// Send an NDP request for a given IPv6 Address
+    RequestNdp { address: std::net::Ipv6Addr },
 }
 
 fn main() {
@@ -177,6 +176,12 @@ fn main() {
                     limit -= 1;
                 }
             }
+        }
+        Command::RequestNdp { address } => {
+            let interface = get_interface(interfaces, args.interface.as_ref());
+            let requester = ndp::NdpRequest::new(&interface, address);
+            let hw_addr = requester.request().unwrap();
+            eprintln!("{} has MAC Address {}", address, hw_addr);
         }
     }
 }

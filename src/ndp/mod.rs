@@ -4,13 +4,18 @@ use std::net::Ipv6Addr;
 
 use ipnetwork::Ipv6Network;
 use pnet::datalink::{self, Channel, MacAddr, NetworkInterface};
-use pnet::packet::icmpv6::{ndp as pnet_ndp, Icmpv6Packet, Icmpv6Type, Icmpv6Types};
+use pnet::packet::icmpv6::{ndp as pnet_ndp, Icmpv6Packet, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv6::Ipv6Packet;
+use pnet::packet::ipv6::{Ipv6Packet, MutableIpv6Packet};
 use pnet::packet::{
     ethernet::{EtherType, EtherTypes, EthernetPacket, MutableEthernetPacket},
-    MutablePacket, Packet,
+    MutablePacket, Packet, PacketSize,
 };
+
+use super::find_ipv6_addr;
+
+const NDP_MAC_PREFIX: [u8; 3] = [0x33, 0x33, 0xff];
+const NDP_IP_ADDR: &str = "ff02::1:0:0";
 
 pub enum NdpPacket {
     /// Link Layer Request
@@ -65,18 +70,18 @@ impl NdpMonitor {
         })
     }
 
-    // pub fn send_solicitation(&self, addr: Ipv4Addr) -> io::Result<()> {
-    //     let mut tx = self.tx.borrow_mut();
-    //     let request = build_request(&self.interface, addr)?;
-    //     match tx.send_to(request.packet(), None) {
-    //         Some(Ok(_)) => Ok(()),
-    //         Some(Err(err)) => return Err(err),
-    //         None => Err(io::Error::new(
-    //             io::ErrorKind::BrokenPipe,
-    //             "Channel is no longer available",
-    //         )),
-    //     }
-    // }
+    pub fn send_solicitation(&self, addr: Ipv6Addr) -> io::Result<()> {
+        let mut tx = self.tx.borrow_mut();
+        let solicit = build_solicitation(&self.interface, addr)?;
+        match tx.send_to(solicit.packet(), None) {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(err)) => return Err(err),
+            None => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Channel is no longer available",
+            )),
+        }
+    }
 }
 
 impl<'a> Iterator for NdpMonitor {
@@ -97,6 +102,70 @@ impl<'a> Iterator for NdpMonitor {
             }
             _ => None,
         }
+    }
+}
+
+/// NdpRequest is used to send an NDP Requests and wait for the reply
+pub struct NdpRequest<'a> {
+    /// Interface to monitor
+    interface: &'a NetworkInterface,
+    /// IP Address that the request is targeting
+    address: Ipv6Addr,
+}
+
+impl<'a> NdpRequest<'a> {
+    /// Create a new NdpRequest for a given interface
+    pub fn new(interface: &'a NetworkInterface, address: Ipv6Addr) -> Self {
+        Self { interface, address }
+    }
+
+    /// Start the NDP Request/Reply process
+    pub fn request(&self) -> io::Result<datalink::MacAddr> {
+        let (mut tx, mut rx) = match datalink::channel(&self.interface, Default::default())? {
+            Channel::Ethernet(tx, rx) => (tx, rx),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Invalid interface channel type",
+                ))
+            }
+        };
+
+        // Build and Send an NDP Request
+        let request = build_solicitation(&self.interface, self.address)?;
+        // Send the packet bytes via the `tx` Channel for our interface
+        match tx.send_to(request.packet(), None) {
+            Some(Ok(_)) => {
+                println!("Sent NDP Request to {}", self.address);
+            }
+            Some(Err(err)) => return Err(err),
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Channel is no longer available",
+                ))
+            }
+        }
+
+        // Now monitor NDP packets and listen for Reply
+        while let Ok(data) = rx.next() {
+            if let Some(packet) = EthernetPacket::new(data) {
+                match packet.get_ethertype() {
+                    // We only want to operate on IPv6 packets
+                    EtherType(0x86dd) => match extract_ndp_packet(&packet) {
+                        Some(NdpPacket::NeighborSolicitation { src_mac, .. }) => {
+                            return Ok(src_mac)
+                        }
+                        _ => continue,
+                    },
+                    _ => continue,
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Stopped receiving packets",
+        ))
     }
 }
 
@@ -187,108 +256,66 @@ fn extract_ndp_prefixes(options: &Vec<pnet_ndp::NdpOption>) -> Vec<Ipv6Network> 
     }
     prefixes
 }
-/*
-/// NdpRequest is used to send an Ndp Requests and wait for the reply
-pub struct NdpRequest<'a> {
-    /// Interface to monitor
-    interface: &'a NetworkInterface,
-    /// IP Address that the request is targeting
-    address: Ipv4Addr,
-}
 
-impl<'a> NdpRequest<'a> {
-    /// Create a new NdpRequest for a given interface
-    pub fn new(interface: &'a NetworkInterface, address: Ipv4Addr) -> Self {
-        Self { interface, address }
-    }
-
-    /// Start the Ndp Request/Reply process
-    pub fn request(&self) -> io::Result<datalink::MacAddr> {
-        let (mut tx, mut rx) = match datalink::channel(&self.interface, Default::default())? {
-            Channel::Ethernet(tx, rx) => (tx, rx),
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Invalid interface channel type",
-                ))
-            }
-        };
-
-        // Build and Send an Ndp Request
-        let request = build_request(&self.interface, self.address)?;
-        // Send the packet bytes via the `tx` Channel for our interface
-        match tx.send_to(request.packet(), None) {
-            Some(Ok(_)) => {
-                println!("Sent Ndp Request to {}", self.address);
-            }
-            Some(Err(err)) => return Err(err),
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "Channel is no longer available",
-                ))
-            }
-        }
-
-        // Now monitor Ndp packets and listen for Reply
-        while let Ok(data) = rx.next() {
-            if let Some(packet) = EthernetPacket::new(data) {
-                match packet.get_ethertype() {
-                    EtherType(0x0806) => {
-                        if let Some(ndp) = NdpPacket::new(&packet.payload()) {
-                            match ndp.get_operation() {
-                                NdpOperations::Reply => {
-                                    // Check to see if this is the reply to our request
-                                    if ndp.get_sender_proto_addr() == self.address {
-                                        return Ok(ndp.get_sender_hw_addr());
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-                    }
-                    _ => (),
-                }
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "Stopped receiving packets",
-        ))
-    }
-}
-
-pub fn build_request(
+pub fn build_solicitation(
     interface: &NetworkInterface,
-    addr: Ipv4Addr,
+    addr: Ipv6Addr,
 ) -> io::Result<MutableEthernetPacket> {
-    let mut ethernet_packet = MutableEthernetPacket::owned(vec![0u8; 42]).unwrap();
+    let hw_addr = interface
+        .mac
+        .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "No MAC Address present"))?;
+
+    let mut ns_packet = pnet_ndp::MutableNeighborSolicitPacket::owned(vec![0; 32]).unwrap();
+    ns_packet.set_icmpv6_type(Icmpv6Types::NeighborSolicit);
+    ns_packet.set_icmpv6_code(pnet_ndp::Icmpv6Codes::NoCode);
+    ns_packet.set_target_addr(addr);
+    let hw_addr_bytes: [u8; 6] = hw_addr.into();
+    ns_packet.set_options(&[pnet_ndp::NdpOption {
+        option_type: pnet_ndp::NdpOptionTypes::SourceLLAddr,
+        length: 1,
+        data: hw_addr_bytes.to_vec(),
+    }]);
+
+    let source_ip = find_ipv6_addr(&interface).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::AddrNotAvailable, "No IPv4 Address present")
+    })?;
+    let mut ipv6_packet = MutableIpv6Packet::owned(vec![0; 72]).unwrap();
+    ipv6_packet.set_version(6);
+    ipv6_packet.set_traffic_class(0);
+    ipv6_packet.set_hop_limit(1);
+    ipv6_packet.set_next_header(IpNextHeaderProtocols::Icmpv6);
+    ipv6_packet.set_source(source_ip);
+    ipv6_packet.set_destination(get_ndp_dest_ip(&[0x00, 0x01, 0x0a, 0xbc]));
+    ipv6_packet.set_payload_length(ns_packet.packet_size() as u16);
+    ipv6_packet.set_payload(ns_packet.packet_mut());
 
     let hw_addr = interface
         .mac
         .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "No MAC Address present"))?;
-    let source_ip = find_ipv4_addr(&interface).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::AddrNotAvailable, "No IPv4 Address present")
-    })?;
-
-    ethernet_packet.set_destination(MacAddr::broadcast());
+    let mut ethernet_packet = MutableEthernetPacket::owned(vec![0u8; 88]).unwrap();
     ethernet_packet.set_source(hw_addr);
-    ethernet_packet.set_ethertype(EtherTypes::Arp);
-
-    let mut ndp_packet = MutableArpPacket::owned(vec![0; 28]).unwrap();
-
-    ndp_packet.set_hardware_type(ArpHardwareTypes::Ethernet);
-    ndp_packet.set_protocol_type(EtherTypes::Ipv4);
-    ndp_packet.set_hw_addr_len(6);
-    ndp_packet.set_proto_addr_len(4);
-    ndp_packet.set_operation(ArpOperations::Request);
-    ndp_packet.set_sender_hw_addr(hw_addr);
-    ndp_packet.set_sender_proto_addr(source_ip);
-    ndp_packet.set_target_hw_addr(MacAddr::zero());
-    ndp_packet.set_target_proto_addr(addr);
-
-    ethernet_packet.set_payload(ndp_packet.packet_mut());
-
+    ethernet_packet.set_destination(get_ndp_dest_mac(&[0x01, 0x0a, 0xbc]));
+    ethernet_packet.set_ethertype(EtherTypes::Ipv6);
+    ethernet_packet.set_payload(ipv6_packet.packet_mut());
     Ok(ethernet_packet)
 }
-*/
+
+fn get_ndp_dest_mac(host_bytes: &[u8; 3]) -> MacAddr {
+    let mut mac_bytes = [0u8; 6];
+    for (i, b) in NDP_MAC_PREFIX.iter().enumerate() {
+        mac_bytes[i] = *b;
+    }
+    for (i, b) in host_bytes.iter().enumerate() {
+        mac_bytes[i + 3] = *b;
+    }
+    mac_bytes.into()
+}
+
+fn get_ndp_dest_ip(host_bytes: &[u8; 4]) -> Ipv6Addr {
+    let ipv6: Ipv6Addr = NDP_IP_ADDR.parse().expect("Can parse const prefix");
+    let mut ip_bytes: [u8; 16] = ipv6.octets();
+    for (i, b) in host_bytes.iter().enumerate() {
+        ip_bytes[i + 12] = *b;
+    }
+    ip_bytes.into()
+}
