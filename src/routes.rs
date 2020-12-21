@@ -8,6 +8,7 @@ use ipnetwork::{ipv4_mask_to_prefix, ipv6_mask_to_prefix, IpNetwork, Ipv4Network
 use pnet::datalink::{self, MacAddr, NetworkInterface};
 
 use super::arp::ArpCache;
+use super::ndp::NdpCache;
 
 #[derive(Debug)]
 pub struct Route {
@@ -39,7 +40,8 @@ pub struct Routes {
     v4rib: IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>,
     v6rib: IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>,
     interfaces: HashMap<String, NetworkInterface>,
-    caches: HashMap<String, ArpCache>,
+    arp_caches: HashMap<String, ArpCache>,
+    ndp_caches: HashMap<String, NdpCache>,
 }
 
 impl Routes {
@@ -56,16 +58,21 @@ impl Routes {
         let v4rib = RouteParser::<Ipv4Addr>::parse(&iface_names)?;
         let v6rib = RouteParser::<Ipv6Addr>::parse(&iface_names)?;
 
-        let caches = ifaces
+        let arp_caches = ifaces
             .iter()
             .map(|(name, iface)| (name.clone(), ArpCache::new(&iface)))
+            .collect();
+        let ndp_caches = ifaces
+            .iter()
+            .map(|(name, iface)| (name.clone(), NdpCache::new(&iface)))
             .collect();
 
         Ok(Self {
             v4rib,
             v6rib,
             interfaces: ifaces,
-            caches,
+            arp_caches,
+            ndp_caches,
         })
     }
 
@@ -146,11 +153,22 @@ impl Routes {
         }
     }
 
-    fn get_mac(&self, iface_name: &str, addr: Ipv4Addr) -> Option<MacAddr> {
-        if let Some(cache) = self.caches.get(iface_name) {
-            cache.get(addr, std::time::Duration::from_millis(100))
-        } else {
-            None
+    fn get_mac<T: Into<IpAddr>>(&self, iface_name: &str, addr: T) -> Option<MacAddr> {
+        match addr.into() {
+            IpAddr::V4(v4) => {
+                if let Some(cache) = self.arp_caches.get(iface_name) {
+                    cache.get(v4, std::time::Duration::from_millis(100))
+                } else {
+                    None
+                }
+            }
+            IpAddr::V6(v6) => {
+                if let Some(cache) = self.ndp_caches.get(iface_name) {
+                    cache.get(v6, std::time::Duration::from_millis(100))
+                } else {
+                    None
+                }
+            }
         }
     }
 
