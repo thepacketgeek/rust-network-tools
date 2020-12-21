@@ -40,6 +40,7 @@ pub struct Routes {
     v4rib: IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>,
     v6rib: IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>,
     interfaces: HashMap<String, NetworkInterface>,
+    // MAC Address caches
     arp_caches: HashMap<String, ArpCache>,
     ndp_caches: HashMap<String, NdpCache>,
 }
@@ -275,6 +276,10 @@ impl RouteParser<Ipv6Addr> {
             .map_err(|_| anyhow!("Couldn't parse Prefix"))?;
         let mask = ipv6_mask_to_prefix(dest.mask())?;
         let flags = words[2];
+        let metric: i32 = words[3].parse()?;
+        if metric < 0 {
+            return Err(anyhow!("Not a valid route metric"));
+        }
         let entry = Entry {
             next_hop: words[1]
                 .parse()
@@ -315,7 +320,8 @@ fe80::/64                      ::                         U    256 1     0 eth0
 3001:10:ab::6/128              ::                         U    256 1     0 wg0
 3001:10:ab::/64                ::                         U    1024 2     3 wg0
 ::/0                           2601:a10:2:dead::1         UG   1024 3384554 eth0
-::1/128                        ::                         Un   0   4 46615 lo"#
+::1/128                        ::                         Un   0   4 46615 lo
+::/0                           ::                         !n   -1 3384554 lo"#
         }
         _ => unimplemented!(),
     };
