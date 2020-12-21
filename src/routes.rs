@@ -4,7 +4,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{anyhow, Context};
 use ip_network_table_deps_treebitmap::{address::Address, IpLookupTable};
-use ipnetwork::{ipv4_mask_to_prefix, ipv6_mask_to_prefix, IpNetwork, Ipv4Network, Ipv6Network};
+#[cfg(target_os = "linux")]
+use ipnetwork::{ipv4_mask_to_prefix, ipv6_mask_to_prefix};
+use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use pnet::datalink::{self, MacAddr, NetworkInterface};
 
 use super::arp::ArpCache;
@@ -380,22 +382,20 @@ impl RouteParser<Ipv4Addr> {
 
     fn parse_row(line: &str) -> anyhow::Result<(Ipv4Addr, u32, Entry<Ipv4Addr>)> {
         let words: Vec<_> = line.split_ascii_whitespace().collect();
+        if words.len() < 4 {
+            return Err(anyhow!("Couldn't parse Row"));
+        }
 
-        let dest = words[0]
-            .parse()
-            .map_err(|_| anyhow!("Couldn't parse Prefix"))?;
+        let network = parse_destination_v4(&words[0])?;
+        let dest = network.ip();
+        let mask = network.prefix();
         let gw = words[1]
             .parse()
             .map_err(|_| anyhow!("Couldn't parse Gateway"))?;
-        let mask = words[2]
-            .parse()
-            .map_err(|_| anyhow!("Couldn't parse Prefix mask"))
-            .and_then(|m| ipv4_mask_to_prefix(m).context("Converting mask to masklen"))
-            .map_err(|_| anyhow!("Couldn't parse Prefix mask"))?;
-        let flags = words[3];
+        let flags = words[2];
         let entry = Entry {
             next_hop: gw,
-            interface: words[7].to_owned(),
+            interface: words[3].to_owned(),
             is_gateway: flags.contains('G'),
         };
         Ok((dest, mask.into(), entry))
@@ -421,29 +421,85 @@ impl RouteParser<Ipv6Addr> {
 
     fn parse_row(line: &str) -> anyhow::Result<(Ipv6Addr, u32, Entry<Ipv6Addr>)> {
         let words: Vec<_> = line.split_ascii_whitespace().collect();
-        let dest: Ipv6Network = words[0]
-            .parse()
-            .map_err(|_| anyhow!("Couldn't parse Prefix"))?;
-        let mask = ipv6_mask_to_prefix(dest.mask())?;
+        if words.len() < 4 {
+            return Err(anyhow!("Couldn't parse Row"));
+        }
+
+        let network: Ipv6Network = parse_destination_v6(&words[0])?;
+        let dest = network.ip();
+        let mask = network.prefix();
         let flags = words[2];
         let entry = Entry {
             next_hop: words[1]
+                // Remove trailing interface names (E.g. 3001:10::abcd%lo)
+                .split("%")
+                .next()
+                .unwrap_or("")
                 .parse()
                 .map_err(|_| anyhow!("Couldn't parse Gateway"))?,
-            interface: words[words.len() - 1].to_owned(),
+            interface: words[3].to_owned(),
             is_gateway: flags.contains('G'),
         };
-        Ok((dest.ip(), mask.into(), entry))
+        Ok((dest, mask.into(), entry))
     }
 }
 
 #[cfg(not(test))]
 #[cfg(target_os = "macos")]
 fn get_netstat_output(ip_version: u8) -> io::Result<String> {
+    let family = match ip_version {
+        4 => "inet",
+        6 => "inet6",
+        _ => unreachable!("Unsupported Address Famly"),
+    };
     let output = std::process::Command::new("netstat")
-        .args(&[&format!("-rn{}", ip_version)])
+        .args(&[&format!("-rnf {}", family)])
         .output()?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn parse_destination_v4(dest: &str) -> anyhow::Result<Ipv4Network> {
+    if dest == "default" {
+        return Ipv4Network::new(Ipv4Addr::new(0, 0, 0, 0), 0).with_context(|| "Default route");
+    }
+    if let Ok(prefix) = dest.parse() {
+        return Ok(prefix);
+    }
+
+    let v: Vec<&str> = dest.split("/").collect();
+    let (addr, mask) = match v.len() {
+        1 => (v[0], None),
+        2 => (v[0], Some(v[1].parse::<u8>()?)),
+        _ => return Err(anyhow!("Couldn't parse Prefix {}", dest)),
+    };
+    let mut octets = [0u8; 4];
+    for (i, o) in addr.split(".").enumerate() {
+        octets[i] = o.parse()?;
+    }
+
+    Ipv4Network::new(octets.into(), mask.unwrap_or(32))
+        .map_err(|_| anyhow!("Couldn't parse Prefix {}", dest))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_destination_v6(dest: &str) -> anyhow::Result<Ipv6Network> {
+    if dest == "default" {
+        return Ipv6Network::new("::".parse()?, 0).with_context(|| "Default route");
+    }
+    if let Ok(prefix) = dest.parse() {
+        return Ok(prefix);
+    }
+
+    let v: Vec<&str> = dest.split("/").collect();
+    let (addr, mask) = match v.len() {
+        1 => (v[0], None),
+        2 => (v[0], Some(v[1].parse::<u8>()?)),
+        _ => return Err(anyhow!("Couldn't parse Prefix {}", dest)),
+    };
+
+    Ipv6Network::new(addr.parse()?, mask.unwrap_or(128))
+        .map_err(|_| anyhow!("Couldn't parse Prefix {}", dest))
 }
 
 #[cfg(test)]
@@ -476,6 +532,7 @@ Internet6:
 Destination                             Gateway                         Flags         Netif Expire
 default                                 fe80::0000:efff:fe66:1337%en0   UGc             en0
 ::1                                     ::1                             UHL             lo0
+fe80::%lo0/64                           fe80::1%lo0                     UcI             lo0
 2601:10:20::/64                 link#4                          UC              en0
 2601:10:20::df00                ba:dc:fe:c0:d1:e2               UHLWIi          en0"#
         }
@@ -492,26 +549,63 @@ mod tests {
     #[test]
     fn test_parse() {
         let routes = Routes::new().unwrap();
-        let next_hop = routes
-            .lookup_gateway("172.16.0.4".parse().unwrap())
-            .unwrap();
+        let next_hop = routes.lookup_gateway("10.0.0.1".parse().unwrap()).unwrap();
 
-        assert_eq!(next_hop.ip, "172.16.0.4".parse::<IpAddr>().unwrap());
+        assert_eq!(next_hop.ip, "10.0.0.1".parse::<IpAddr>().unwrap());
 
         let next_hop = routes.lookup_gateway("4.2.2.1".parse().unwrap()).unwrap();
-        assert_eq!(next_hop.ip, "172.16.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(next_hop.ip, "10.0.0.1".parse::<IpAddr>().unwrap());
 
         let next_hop = routes
             .lookup_gateway("3001:10:ab::abcd:10".parse().unwrap())
             .unwrap();
         assert_eq!(
             next_hop.ip,
-            "3001:10:ab::abcd:10".parse::<IpAddr>().unwrap()
+            "fe80::efff:fe66:1337".parse::<IpAddr>().unwrap()
         );
 
         let next_hop = routes
             .lookup_gateway("2001::1:1:1:1".parse().unwrap())
             .unwrap();
-        assert_eq!(next_hop.ip, "2601:a10:2:dead::1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            next_hop.ip,
+            "fe80::efff:fe66:1337".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_parse_destination_v4() {
+        assert_eq!(
+            parse_destination_v4("10.8/24").unwrap(),
+            Ipv4Network::new("10.8.0.0".parse().unwrap(), 24).unwrap(),
+        );
+        assert_eq!(
+            parse_destination_v4("10.8.0.10").unwrap(),
+            Ipv4Network::new("10.8.0.10".parse().unwrap(), 32).unwrap(),
+        );
+        assert_eq!(
+            parse_destination_v4("127").unwrap(),
+            Ipv4Network::new("127.0.0.0".parse().unwrap(), 32).unwrap(),
+        );
+        assert_eq!(
+            parse_destination_v4("default").unwrap(),
+            Ipv4Network::new("0.0.0.0".parse().unwrap(), 0).unwrap(),
+        );
+    }
+
+    #[test]
+    fn test_parse_destination_v6() {
+        assert_eq!(
+            parse_destination_v6("default").unwrap(),
+            Ipv6Network::new("::".parse().unwrap(), 0).unwrap(),
+        );
+        assert_eq!(
+            parse_destination_v6("fe80::/64").unwrap(),
+            Ipv6Network::new("fe80::".parse().unwrap(), 64).unwrap(),
+        );
+        assert_eq!(
+            parse_destination_v6("3001:10::20").unwrap(),
+            Ipv6Network::new("3001:10::20".parse().unwrap(), 128).unwrap(),
+        );
     }
 }
