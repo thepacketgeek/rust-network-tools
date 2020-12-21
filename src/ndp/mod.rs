@@ -14,6 +14,9 @@ use pnet::packet::{
 
 use super::find_ipv6_addr;
 
+mod cache;
+pub use cache::NdpCache;
+
 const NDP_MAC_PREFIX: [u8; 3] = [0x33, 0x33, 0xff];
 const NDP_IP_ADDR: &str = "ff02::1:0:0";
 
@@ -24,20 +27,19 @@ pub enum NdpPacket {
         src_mac: MacAddr,
         target: Ipv6Addr,
     },
-    /// Link Layer Node Response ()
+    /// Link Layer Node Response
     NeighborAdvertisement {
         src: Ipv6Addr,
         src_mac: MacAddr,
         target: Ipv6Addr,
     },
+    /// L3 Router Prefix Discovery
+    RouterSolicitation { src: Ipv6Addr, src_mac: MacAddr },
+    /// L3 Router Response with available segment prefixes
     RouterAdvertisement {
         src: Ipv6Addr,
         src_mac: MacAddr,
         prefixes: Vec<Ipv6Network>,
-    },
-    RouterSolicitation {
-        src: Ipv6Addr,
-        src_mac: MacAddr,
     },
 }
 
