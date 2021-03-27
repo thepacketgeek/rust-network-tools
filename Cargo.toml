@@ -6,6 +6,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
+dns-lookup = "1.0.6"
 etherparse = "0.9.0"
 pnet = "0.27"
 structopt = "0.3"

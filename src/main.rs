@@ -3,7 +3,7 @@ use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::arp::ArpOperations;
 use structopt::StructOpt;
 
-use network_tools::{arp, ndp, routes};
+use network_tools::{arp, ndp, resolve_host, routes, IpType};
 
 #[derive(Debug, StructOpt)]
 struct Args {
@@ -20,8 +20,16 @@ struct Args {
 pub enum Command {
     /// List available Interfaces
     Interfaces,
-    /// List available Routes (or route for given destination IpAddr)
-    Route { addr: Option<std::net::IpAddr> },
+    /// List available Routes (or route for given destination host)
+    Route {
+        addr: Option<String>,
+        /// Use IPv4 Only
+        #[structopt(short = "4")]
+        use_ipv4: bool,
+        /// Use IPv6 Only
+        #[structopt(short = "6")]
+        use_ipv6: bool,
+    },
     /// Monitor for ARP Request/Replies
     MonitorArp {
         #[structopt(short, long, default_value = "10")]
@@ -55,18 +63,28 @@ fn main() -> Result<()> {
                 println!("{:w$} [{}]", iface.name, addrs.join(", "), w = width + 2);
             }
         }
-        Command::Route { addr } => {
+        Command::Route {
+            addr,
+            use_ipv4,
+            use_ipv6,
+        } => {
             let routes = if let Some(iface_name) = &args.interface {
                 let interface = get_interface(interfaces, Some(iface_name));
                 routes::Routes::with_interfaces(vec![interface])?
             } else {
                 routes::Routes::new()?
             };
-            if let Some(dest) = addr {
-                if let Some(next_hop) = routes.lookup_gateway(dest) {
+            let ip_type = match (use_ipv4, use_ipv6) {
+                (true, false) => IpType::V4,
+                (false, true) => IpType::V6,
+                _ => IpType::Either,
+            };
+            if let Some(host) = addr {
+                let destination = resolve_host(&host, ip_type)?;
+                if let Some(next_hop) = routes.lookup_gateway(destination) {
                     println!(
                         "{} via {} [{}]",
-                        dest,
+                        destination,
                         next_hop.ip,
                         next_hop
                             .mac
@@ -75,7 +93,11 @@ fn main() -> Result<()> {
                     );
                 }
             } else {
-                for route in routes.routes() {
+                for route in routes
+                    .routes()
+                    .iter()
+                    .filter(|r| ip_type.matches(r.next_hop.ip))
+                {
                     println!(
                         "{}{} via {} [{}]",
                         if route.is_gateway { "*" } else { "" },

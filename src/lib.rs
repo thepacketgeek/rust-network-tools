@@ -1,6 +1,8 @@
 //! An assortment of network "tool" examples using libpnet
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use anyhow::{anyhow, Result};
+use dns_lookup::lookup_host;
 use pnet::datalink::{MacAddr, NetworkInterface};
 
 /// ARP functions like monitoring & making requests, and an ArpCache
@@ -11,6 +13,41 @@ pub mod ndp;
 
 /// Routing/Forwarding Table Lookup
 pub mod routes;
+
+/// IP Addresses to find for Device DNS resolution
+#[derive(Copy, Clone, Debug)]
+pub enum IpType {
+    /// Only Ipv4 Addresses
+    V4,
+    /// Only Ipv6 Addresses
+    V6,
+    /// Use whichever address exists (v6 preferred over v4)
+    Either,
+}
+
+impl IpType {
+    /// Test if this IpType matches the given address
+    pub fn matches(&self, addr: IpAddr) -> bool {
+        match (addr, self) {
+            (IpAddr::V4(_), IpType::V4) => true,
+            (IpAddr::V6(_), IpType::V6) => true,
+            (_, IpType::Either) => true,
+            _ => false,
+        }
+    }
+}
+
+/// Resolve a hostname (can be an Ip address) to the first matching IP of the given type
+pub fn resolve_host(host: &str, version: IpType) -> Result<IpAddr> {
+    let ips = lookup_host(&host)?;
+
+    for ip in ips {
+        if version.matches(ip) {
+            return Ok(ip);
+        }
+    }
+    Err(anyhow!("Unable to resolve {}", host))
+}
 
 // Find the first Ipv4 Address on a NetworkInterface
 pub fn find_ipv4_addr(interface: &NetworkInterface) -> Option<Ipv4Addr> {

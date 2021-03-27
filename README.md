@@ -40,10 +40,10 @@ SUBCOMMANDS:
     help           Prints this message or the help of the given subcommand(s)
     interfaces     List available Interfaces
     monitor-arp    Monitor for ARP Request/Replies
-    monitor-ndp
+    monitor-ndp    Monitor for IPv6 NDP (Neighbor/Router Solicitations & Advertisements)
     request-arp    Send an ARP request for a given IPv4 Address
     request-ndp    Send an NDP request for a given IPv6 Address
-    route          List available Routes (or route for given destination IpAddr)
+    route          List available Routes (or route for given destination host)
 ```
 
 ## Permissions
