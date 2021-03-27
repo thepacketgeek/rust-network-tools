@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, Context, Result};
 use ip_network_table_deps_treebitmap::{address::Address, IpLookupTable};
 #[cfg(target_os = "linux")]
 use ipnetwork::{ipv4_mask_to_prefix, ipv6_mask_to_prefix};
@@ -48,11 +47,11 @@ pub struct Routes {
 }
 
 impl Routes {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new() -> Result<Self> {
         Self::with_interfaces(datalink::interfaces())
     }
 
-    pub fn with_interfaces(interfaces: Vec<NetworkInterface>) -> anyhow::Result<Self> {
+    pub fn with_interfaces(interfaces: Vec<NetworkInterface>) -> Result<Self> {
         let ifaces: HashMap<String, NetworkInterface> = interfaces
             .into_iter()
             .map(|iface| (iface.name.clone(), iface))
@@ -132,7 +131,10 @@ impl Routes {
                             }
                         }
                         // Next hop is not specified (uses the default gateway)
-                        if let Some(default_gw) = self.v6rib.exact_match("::".parse().unwrap(), 0) {
+                        if let Some(default_gw) = self
+                            .v6rib
+                            .exact_match("::".parse().expect("Can parse IPv6 all hosts"), 0)
+                        {
                             return Some(NextHop {
                                 ip: IpAddr::V6(default_gw.next_hop),
                                 mac: None,
@@ -179,7 +181,8 @@ impl Routes {
         let mut routes = Vec::with_capacity(self.v4rib.len() + self.v6rib.len());
         for (prefix, masklen, entry) in self.v4rib.iter() {
             routes.push(Route {
-                prefix: IpNetwork::new(prefix.into(), masklen as u8).unwrap(),
+                prefix: IpNetwork::new(prefix.into(), masklen as u8)
+                    .expect("Convert prefix/mask to IpNetwork"),
                 next_hop: NextHop {
                     ip: entry.next_hop.into(),
                     mac: self.get_mac(&entry.interface, entry.next_hop),
@@ -191,7 +194,8 @@ impl Routes {
         }
         for (prefix, masklen, entry) in self.v6rib.iter() {
             routes.push(Route {
-                prefix: IpNetwork::new(prefix.into(), masklen as u8).unwrap(),
+                prefix: IpNetwork::new(prefix.into(), masklen as u8)
+                    .expect("Convert prefix/mask to IpNetwork"),
                 next_hop: NextHop {
                     ip: entry.next_hop.into(),
                     mac: None,
@@ -216,7 +220,7 @@ where
 impl RouteParser<Ipv4Addr> {
     fn parse(
         interface_names: &HashSet<&String>,
-    ) -> anyhow::Result<IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>> {
+    ) -> Result<IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>> {
         let mut rib = IpLookupTable::new();
         let output = get_netstat_output(4)?;
         for line in output.lines() {
@@ -230,7 +234,7 @@ impl RouteParser<Ipv4Addr> {
         Ok(rib)
     }
 
-    fn parse_row(line: &str) -> anyhow::Result<(Ipv4Addr, u32, Entry<Ipv4Addr>)> {
+    fn parse_row(line: &str) -> Result<(Ipv4Addr, u32, Entry<Ipv4Addr>)> {
         let words: Vec<_> = line.split_ascii_whitespace().collect();
 
         let dest = words[0]
@@ -258,7 +262,7 @@ impl RouteParser<Ipv4Addr> {
 impl RouteParser<Ipv6Addr> {
     fn parse(
         interface_names: &HashSet<&String>,
-    ) -> anyhow::Result<IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>> {
+    ) -> Result<IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>> {
         let mut rib = IpLookupTable::new();
         let output = get_netstat_output(6)?;
         for line in output.lines() {
@@ -271,7 +275,7 @@ impl RouteParser<Ipv6Addr> {
         Ok(rib)
     }
 
-    fn parse_row(line: &str) -> anyhow::Result<(Ipv6Addr, u32, Entry<Ipv6Addr>)> {
+    fn parse_row(line: &str) -> Result<(Ipv6Addr, u32, Entry<Ipv6Addr>)> {
         let words: Vec<_> = line.split_ascii_whitespace().collect();
         let dest: Ipv6Network = words[0]
             .parse()
@@ -295,16 +299,22 @@ impl RouteParser<Ipv6Addr> {
 
 #[cfg(not(test))]
 #[cfg(target_os = "linux")]
-fn get_netstat_output(ip_version: u8) -> io::Result<String> {
+fn get_netstat_output(ip_version: u8) -> Result<String> {
     let output = std::process::Command::new("netstat")
         .args(&[&format!("-rn{}", ip_version)])
         .output()?;
+    if !output.stderr.is_empty() {
+        return Err(anyhow!(
+            "Couldn't get netstat output: {}",
+            String::from_utf8_lossy(&output.stderr).to_string()
+        ));
+    }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-fn get_netstat_output(ip_version: u8) -> io::Result<String> {
+fn get_netstat_output(ip_version: u8) -> Result<String> {
     let output = match ip_version {
         4 => {
             r#"Kernel IP routing table
@@ -366,7 +376,7 @@ mod tests {
 impl RouteParser<Ipv4Addr> {
     fn parse(
         interface_names: &HashSet<&String>,
-    ) -> anyhow::Result<IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>> {
+    ) -> Result<IpLookupTable<Ipv4Addr, Entry<Ipv4Addr>>> {
         let mut rib = IpLookupTable::new();
         let output = get_netstat_output(4)?;
         for line in output.lines() {
@@ -380,7 +390,7 @@ impl RouteParser<Ipv4Addr> {
         Ok(rib)
     }
 
-    fn parse_row(line: &str) -> anyhow::Result<(Ipv4Addr, u32, Entry<Ipv4Addr>)> {
+    fn parse_row(line: &str) -> Result<(Ipv4Addr, u32, Entry<Ipv4Addr>)> {
         let words: Vec<_> = line.split_ascii_whitespace().collect();
         if words.len() < 4 {
             return Err(anyhow!("Couldn't parse Row"));
@@ -406,7 +416,7 @@ impl RouteParser<Ipv4Addr> {
 impl RouteParser<Ipv6Addr> {
     fn parse(
         interface_names: &HashSet<&String>,
-    ) -> anyhow::Result<IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>> {
+    ) -> Result<IpLookupTable<Ipv6Addr, Entry<Ipv6Addr>>> {
         let mut rib = IpLookupTable::new();
         let output = get_netstat_output(6)?;
         for line in output.lines() {
@@ -419,7 +429,7 @@ impl RouteParser<Ipv6Addr> {
         Ok(rib)
     }
 
-    fn parse_row(line: &str) -> anyhow::Result<(Ipv6Addr, u32, Entry<Ipv6Addr>)> {
+    fn parse_row(line: &str) -> Result<(Ipv6Addr, u32, Entry<Ipv6Addr>)> {
         let words: Vec<_> = line.split_ascii_whitespace().collect();
         if words.len() < 4 {
             return Err(anyhow!("Couldn't parse Row"));
@@ -446,20 +456,26 @@ impl RouteParser<Ipv6Addr> {
 
 #[cfg(not(test))]
 #[cfg(target_os = "macos")]
-fn get_netstat_output(ip_version: u8) -> io::Result<String> {
+fn get_netstat_output(ip_version: u8) -> Result<String> {
     let family = match ip_version {
         4 => "inet",
         6 => "inet6",
         _ => unreachable!("Unsupported Address Famly"),
     };
     let output = std::process::Command::new("netstat")
-        .args(&[&format!("-rnf {}", family)])
+        .args(&["-rnf", family])
         .output()?;
+    if !output.stderr.is_empty() {
+        return Err(anyhow!(
+            "Couldn't get netstat output: {}",
+            String::from_utf8_lossy(&output.stderr).to_string()
+        ));
+    }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[cfg(target_os = "macos")]
-fn parse_destination_v4(dest: &str) -> anyhow::Result<Ipv4Network> {
+fn parse_destination_v4(dest: &str) -> Result<Ipv4Network> {
     if dest == "default" {
         return Ipv4Network::new(Ipv4Addr::new(0, 0, 0, 0), 0).with_context(|| "Default route");
     }
@@ -483,7 +499,7 @@ fn parse_destination_v4(dest: &str) -> anyhow::Result<Ipv4Network> {
 }
 
 #[cfg(target_os = "macos")]
-fn parse_destination_v6(dest: &str) -> anyhow::Result<Ipv6Network> {
+fn parse_destination_v6(dest: &str) -> Result<Ipv6Network> {
     if dest == "default" {
         return Ipv6Network::new("::".parse()?, 0).with_context(|| "Default route");
     }
@@ -504,7 +520,7 @@ fn parse_destination_v6(dest: &str) -> anyhow::Result<Ipv6Network> {
 
 #[cfg(test)]
 #[cfg(target_os = "macos")]
-fn get_netstat_output(ip_version: u8) -> io::Result<String> {
+fn get_netstat_output(ip_version: u8) -> Result<String> {
     let output = match ip_version {
         4 => {
             r#"Routing tables

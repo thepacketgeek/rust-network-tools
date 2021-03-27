@@ -1,3 +1,4 @@
+use anyhow::Result;
 use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::arp::ArpOperations;
 use structopt::StructOpt;
@@ -29,6 +30,7 @@ pub enum Command {
     },
     /// Send an ARP request for a given IPv4 Address
     RequestArp { address: std::net::Ipv4Addr },
+    /// Monitor for IPv6 NDP (Neighbor/Router Solicitations & Advertisements)
     MonitorNdp {
         #[structopt(short, long, default_value = "10")]
         /// Monitor until up to this many NDP packets seen
@@ -38,7 +40,7 @@ pub enum Command {
     RequestNdp { address: std::net::Ipv6Addr },
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::from_args();
     let interfaces: Vec<NetworkInterface> = datalink::interfaces().into_iter().collect();
 
@@ -56,9 +58,9 @@ fn main() {
         Command::Route { addr } => {
             let routes = if let Some(iface_name) = &args.interface {
                 let interface = get_interface(interfaces, Some(iface_name));
-                routes::Routes::with_interfaces(vec![interface]).unwrap()
+                routes::Routes::with_interfaces(vec![interface])?
             } else {
-                routes::Routes::new().unwrap()
+                routes::Routes::new()?
             };
             if let Some(dest) = addr {
                 if let Some(next_hop) = routes.lookup_gateway(dest) {
@@ -90,7 +92,7 @@ fn main() {
         }
         Command::MonitorArp { count } => {
             let interface = get_interface(interfaces, args.interface.as_ref());
-            let mut monitor = arp::ArpMonitor::new(&interface).unwrap();
+            let mut monitor = arp::ArpMonitor::new(&interface)?;
             let mut limit = count;
             loop {
                 for arp in &mut monitor {
@@ -105,7 +107,7 @@ fn main() {
                             arp.get_sender_hw_addr(),
                             arp.get_sender_proto_addr()
                         ),
-                        _ => return,
+                        _ => return Ok(()),
                     }
 
                     if limit == 0 {
@@ -118,12 +120,12 @@ fn main() {
         Command::RequestArp { address } => {
             let interface = get_interface(interfaces, args.interface.as_ref());
             let requester = arp::ArpRequest::new(&interface, address);
-            let hw_addr = requester.request().unwrap();
+            let hw_addr = requester.request()?;
             eprintln!("{} has MAC Address {}", address, hw_addr);
         }
         Command::MonitorNdp { count } => {
             let interface = get_interface(interfaces, args.interface.as_ref());
-            let mut monitor = ndp::NdpMonitor::new(&interface).unwrap();
+            let mut monitor = ndp::NdpMonitor::new(&interface)?;
             let mut limit = count;
             loop {
                 for ndp in &mut monitor {
@@ -134,7 +136,7 @@ fn main() {
                             target,
                         } => {
                             eprintln!(
-                                "Neighbor Advert*: {} has mac {} (responding to {})",
+                                "Neighbor Advertisement*: {} has mac {} (responding to {})",
                                 src, src_mac, target
                             );
                         }
@@ -165,7 +167,7 @@ fn main() {
                                 .collect::<Vec<String>>()
                                 .join(", ");
                             eprintln!(
-                                "Router Advert*: {} is advertising the prefixes: {} (via {})",
+                                "Router Advertisement*: {} is advertising the prefixes: {} (via {})",
                                 src, networks, src_mac,
                             );
                         }
@@ -180,10 +182,11 @@ fn main() {
         Command::RequestNdp { address } => {
             let interface = get_interface(interfaces, args.interface.as_ref());
             let requester = ndp::NdpRequest::new(&interface, address);
-            let hw_addr = requester.request().unwrap();
+            let hw_addr = requester.request()?;
             eprintln!("{} has MAC Address {}", address, hw_addr);
         }
     }
+    Ok(())
 }
 
 fn get_interface<'a>(
