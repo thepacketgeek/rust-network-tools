@@ -89,7 +89,7 @@ fn main() -> Result<()> {
                         next_hop
                             .mac
                             .map(|mac| mac.to_string())
-                            .unwrap_or("--".to_owned())
+                            .unwrap_or_else(|| "--".to_owned())
                     );
                 }
             } else {
@@ -107,7 +107,7 @@ fn main() -> Result<()> {
                             .next_hop
                             .mac
                             .map(|mac| mac.to_string())
-                            .unwrap_or("--".to_owned())
+                            .unwrap_or_else(|| "--".to_owned())
                     );
                 }
             }
@@ -211,15 +211,14 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn get_interface<'a>(
+fn get_interface(
     interfaces: Vec<NetworkInterface>,
     iface_name: Option<&String>,
 ) -> NetworkInterface {
     if let Some(iface_name) = iface_name {
         interfaces
             .into_iter()
-            .filter(|iface| &iface.name == iface_name)
-            .next()
+            .find(|iface| &iface.name == iface_name)
             .unwrap_or_else(|| {
                 eprintln!("'{}' is not a valid interface", iface_name,);
                 std::process::exit(1);

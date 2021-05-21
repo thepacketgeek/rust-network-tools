@@ -28,8 +28,8 @@ impl NdpCache {
         };
 
         Self {
-            entries: entries.clone(),
-            pending_requests: requests.clone(),
+            entries,
+            pending_requests: requests,
             _background: monitor,
         }
     }
@@ -62,7 +62,7 @@ impl NdpCache {
     pub fn get(&self, addr: Ipv6Addr, timeout: Duration) -> Option<MacAddr> {
         let maybe_mac = {
             let entries = self.entries.lock().unwrap();
-            entries.get(&addr).map(|m| *m)
+            entries.get(&addr).copied()
         };
         if let Some(mac) = maybe_mac {
             Some(mac)
@@ -98,24 +98,20 @@ fn run_ndp_monitor(
             if *request_sent {
                 continue;
             }
-            if let Ok(_) = monitor.send_solicitation(*pending) {
+            if monitor.send_solicitation(*pending).is_ok() {
                 *request_sent = true;
             }
         }
-        if let Some(packet) = monitor.next() {
-            match packet {
-                NdpPacket::NeighborAdvertisement {
-                    src: _,
-                    src_mac,
-                    target,
-                } => {
-                    // Check to see if this is the reply to a pending request
-                    let mut requests = pending_requests.lock().unwrap();
-                    if let Some((ip, _)) = requests.remove_entry(&target) {
-                        entries.lock().unwrap().insert(ip, src_mac);
-                    }
-                }
-                _ => (),
+        if let Some(NdpPacket::NeighborAdvertisement {
+            src: _,
+            src_mac,
+            target,
+        }) = monitor.next()
+        {
+            // Check to see if this is the reply to a pending request
+            let mut requests = pending_requests.lock().unwrap();
+            if let Some((ip, _)) = requests.remove_entry(&target) {
+                entries.lock().unwrap().insert(ip, src_mac);
             }
         }
     }

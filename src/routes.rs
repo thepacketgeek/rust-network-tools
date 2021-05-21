@@ -78,6 +78,14 @@ impl Routes {
         })
     }
 
+    pub fn len(&self) -> usize {
+        self.v4rib.len() + self.v6rib.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.v4rib.is_empty() && self.v6rib.is_empty()
+    }
+
     pub fn lookup_gateway(&self, destination: IpAddr) -> Option<NextHop> {
         match destination {
             IpAddr::V4(addr) => {
@@ -88,10 +96,7 @@ impl Routes {
                                 return Some(NextHop {
                                     ip: IpAddr::V4(addr),
                                     mac: self.get_mac(&entry.interface, addr),
-                                    interface: self
-                                        .interfaces
-                                        .get(&entry.interface)
-                                        .map(|i| i.clone()),
+                                    interface: self.interfaces.get(&entry.interface).cloned(),
                                 });
                             }
                         }
@@ -101,7 +106,7 @@ impl Routes {
                             return Some(NextHop {
                                 ip: IpAddr::V4(default_gw.next_hop),
                                 mac,
-                                interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
+                                interface: self.interfaces.get(&entry.interface).cloned(),
                             });
                         }
                     }
@@ -109,7 +114,7 @@ impl Routes {
                     Some(NextHop {
                         ip: IpAddr::V4(entry.next_hop),
                         mac,
-                        interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
+                        interface: self.interfaces.get(&entry.interface).cloned(),
                     })
                 } else {
                     None
@@ -123,10 +128,7 @@ impl Routes {
                                 return Some(NextHop {
                                     ip: IpAddr::V6(addr),
                                     mac: None,
-                                    interface: self
-                                        .interfaces
-                                        .get(&entry.interface)
-                                        .map(|i| i.clone()),
+                                    interface: self.interfaces.get(&entry.interface).cloned(),
                                 });
                             }
                         }
@@ -138,7 +140,7 @@ impl Routes {
                             return Some(NextHop {
                                 ip: IpAddr::V6(default_gw.next_hop),
                                 mac: None,
-                                interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
+                                interface: self.interfaces.get(&entry.interface).cloned(),
                             });
                         }
                     }
@@ -149,7 +151,7 @@ impl Routes {
                     Some(NextHop {
                         ip: IpAddr::V6(entry.next_hop),
                         mac,
-                        interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
+                        interface: self.interfaces.get(&entry.interface).cloned(),
                     })
                 } else {
                     None
@@ -186,7 +188,7 @@ impl Routes {
                 next_hop: NextHop {
                     ip: entry.next_hop.into(),
                     mac: self.get_mac(&entry.interface, entry.next_hop),
-                    interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
+                    interface: self.interfaces.get(&entry.interface).cloned(),
                 },
                 interface: entry.interface.clone(),
                 is_gateway: entry.is_gateway,
@@ -199,7 +201,7 @@ impl Routes {
                 next_hop: NextHop {
                     ip: entry.next_hop.into(),
                     mac: None,
-                    interface: self.interfaces.get(&entry.interface).map(|i| i.clone()),
+                    interface: self.interfaces.get(&entry.interface).cloned(),
                 },
                 interface: entry.interface.clone(),
                 is_gateway: entry.is_gateway,
@@ -329,8 +331,8 @@ Destination                    Next Hop                   Flag Met Ref Use If
 ::1/128                        ::                         U    256 1     0 lo
 2604:a880:2:d1::/64            ::                         U    256 3     4 eth0
 fe80::/64                      ::                         U    256 1     0 eth0
-3001:10:ab::6/128              ::                         U    256 1     0 wg0
-3001:10:ab::/64                ::                         U    1024 2     3 wg0
+3001:10:ab::6/128              ::                         U    256 1     0 eth10
+3001:10:ab::/64                ::                         U    1024 2     3 eth10
 ::/0                           2601:a10:2:dead::1         UG   1024 3384554 eth0
 ::1/128                        ::                         Un   0   4 46615 lo
 ::/0                           ::                         !n   -1 3384554 lo"#
@@ -347,7 +349,33 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let routes = Routes::new().unwrap();
+        let interfaces = vec![
+            NetworkInterface {
+                name: "lo0".to_string(),
+                description: "Loopback".to_string(),
+                index: 0,
+                mac: Some(MacAddr::new(0, 1, 2, 0, 0, 0)),
+                ips: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
+                flags: 0,
+            },
+            NetworkInterface {
+                name: "eth0".to_string(),
+                description: "Ethernet".to_string(),
+                index: 1,
+                mac: Some(MacAddr::new(0, 1, 2, 10, 11, 12)),
+                ips: vec!["172.16.20.10".parse().unwrap()],
+                flags: 0,
+            },
+            NetworkInterface {
+                name: "eth1".to_string(),
+                description: "Ethernet".to_string(),
+                index: 2,
+                mac: Some(MacAddr::new(0, 1, 2, 10, 11, 14)),
+                ips: vec!["192.168.0.10".parse().unwrap()],
+                flags: 0,
+            },
+        ];
+        let routes = Routes::with_interfaces(interfaces).unwrap();
         let next_hop = routes
             .lookup_gateway("172.16.0.4".parse().unwrap())
             .unwrap();
@@ -360,10 +388,7 @@ mod tests {
         let next_hop = routes
             .lookup_gateway("3001:10:ab::abcd:10".parse().unwrap())
             .unwrap();
-        assert_eq!(
-            next_hop.ip,
-            "3001:10:ab::abcd:10".parse::<IpAddr>().unwrap()
-        );
+        assert_eq!("2601:a10:2:dead::1".parse::<IpAddr>().unwrap(), next_hop.ip);
 
         let next_hop = routes
             .lookup_gateway("2001::1:1:1:1".parse().unwrap())
@@ -442,7 +467,7 @@ impl RouteParser<Ipv6Addr> {
         let entry = Entry {
             next_hop: words[1]
                 // Remove trailing interface names (E.g. 3001:10::abcd%lo)
-                .split("%")
+                .split('%')
                 .next()
                 .unwrap_or("")
                 .parse()
@@ -483,14 +508,14 @@ fn parse_destination_v4(dest: &str) -> Result<Ipv4Network> {
         return Ok(prefix);
     }
 
-    let v: Vec<&str> = dest.split("/").collect();
+    let v: Vec<&str> = dest.split('/').collect();
     let (addr, mask) = match v.len() {
         1 => (v[0], None),
         2 => (v[0], Some(v[1].parse::<u8>()?)),
         _ => return Err(anyhow!("Couldn't parse Prefix {}", dest)),
     };
     let mut octets = [0u8; 4];
-    for (i, o) in addr.split(".").enumerate() {
+    for (i, o) in addr.split('.').enumerate() {
         octets[i] = o.parse()?;
     }
 
@@ -507,7 +532,7 @@ fn parse_destination_v6(dest: &str) -> Result<Ipv6Network> {
         return Ok(prefix);
     }
 
-    let v: Vec<&str> = dest.split("/").collect();
+    let v: Vec<&str> = dest.split('/').collect();
     let (addr, mask) = match v.len() {
         1 => (v[0], None),
         2 => (v[0], Some(v[1].parse::<u8>()?)),
@@ -564,7 +589,25 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let routes = Routes::new().unwrap();
+        let interfaces = vec![
+            NetworkInterface {
+                name: "lo0".to_string(),
+                description: "Loopback".to_string(),
+                index: 0,
+                mac: Some(MacAddr::new(0, 1, 2, 0, 0, 0)),
+                ips: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
+                flags: 0,
+            },
+            NetworkInterface {
+                name: "en0".to_string(),
+                description: "Ethernet".to_string(),
+                index: 1,
+                mac: Some(MacAddr::new(0, 1, 2, 10, 11, 12)),
+                ips: vec!["10.0.0.1".parse().unwrap()],
+                flags: 0,
+            },
+        ];
+        let routes = Routes::with_interfaces(interfaces).unwrap();
         let next_hop = routes.lookup_gateway("10.0.0.1".parse().unwrap()).unwrap();
 
         assert_eq!(next_hop.ip, "10.0.0.1".parse::<IpAddr>().unwrap());

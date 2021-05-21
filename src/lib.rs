@@ -28,12 +28,10 @@ pub enum IpType {
 impl IpType {
     /// Test if this IpType matches the given address
     pub fn matches(&self, addr: IpAddr) -> bool {
-        match (addr, self) {
-            (IpAddr::V4(_), IpType::V4) => true,
-            (IpAddr::V6(_), IpType::V6) => true,
-            (_, IpType::Either) => true,
-            _ => false,
-        }
+        matches!(
+            (addr, self),
+            (IpAddr::V4(_), IpType::V4) | (IpAddr::V6(_), IpType::V6) | (_, IpType::Either)
+        )
     }
 }
 

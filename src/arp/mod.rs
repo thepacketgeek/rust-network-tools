@@ -48,7 +48,7 @@ impl ArpMonitor {
         let request = build_request(&self.interface, addr)?;
         match tx.send_to(request.packet(), None) {
             Some(Ok(_)) => Ok(()),
-            Some(Err(err)) => return Err(err),
+            Some(Err(err)) => Err(err),
             None => Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "Channel is no longer available",
@@ -66,13 +66,7 @@ impl<'a> Iterator for ArpMonitor {
                 if let Some(packet) = EthernetPacket::new(data) {
                     match packet.get_ethertype() {
                         // We only want to operate on ARP packets
-                        EtherType(0x0806) => {
-                            if let Some(arp) = ArpPacket::owned(packet.payload().to_owned()) {
-                                return Some(arp);
-                            } else {
-                                return None;
-                            }
-                        }
+                        EtherType(0x0806) => ArpPacket::owned(packet.payload().to_owned()),
                         _ => None,
                     }
                 } else {
@@ -129,21 +123,15 @@ impl<'a> ArpRequest<'a> {
         // Now monitor ARP packets and listen for Reply
         while let Ok(data) = rx.next() {
             if let Some(packet) = EthernetPacket::new(data) {
-                match packet.get_ethertype() {
-                    EtherType(0x0806) => {
-                        if let Some(arp) = ArpPacket::new(&packet.payload()) {
-                            match arp.get_operation() {
-                                ArpOperations::Reply => {
-                                    // Check to see if this is the reply to our request
-                                    if arp.get_sender_proto_addr() == self.address {
-                                        return Ok(arp.get_sender_hw_addr());
-                                    }
-                                }
-                                _ => (),
+                if packet.get_ethertype() == EtherType(0x0806) {
+                    if let Some(arp) = ArpPacket::new(&packet.payload()) {
+                        if arp.get_operation() == ArpOperations::Reply {
+                            // Check to see if this is the reply to our request
+                            if arp.get_sender_proto_addr() == self.address {
+                                return Ok(arp.get_sender_hw_addr());
                             }
                         }
                     }
-                    _ => (),
                 }
             }
         }

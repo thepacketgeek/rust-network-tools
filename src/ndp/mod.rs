@@ -77,7 +77,7 @@ impl NdpMonitor {
         let solicit = build_solicitation(&self.interface, addr)?;
         match tx.send_to(solicit.packet(), None) {
             Some(Ok(_)) => Ok(()),
-            Some(Err(err)) => return Err(err),
+            Some(Err(err)) => Err(err),
             None => Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "Channel is no longer available",
@@ -171,55 +171,39 @@ impl<'a> NdpRequest<'a> {
     }
 }
 
-fn extract_ndp_packet<'a>(ethernet: &EthernetPacket<'a>) -> Option<NdpPacket> {
+fn extract_ndp_packet(ethernet: &EthernetPacket<'_>) -> Option<NdpPacket> {
     Ipv6Packet::new(ethernet.payload()).and_then(|ipv6| match ipv6.get_next_header() {
         IpNextHeaderProtocols::Icmpv6 => {
             Icmpv6Packet::new(ipv6.payload()).and_then(|icmpv6| match icmpv6.get_icmpv6_type() {
                 Icmpv6Types::NeighborAdvert => pnet_ndp::NeighborAdvertPacket::new(ipv6.payload())
-                    .and_then(|na| {
-                        Some(NdpPacket::NeighborAdvertisement {
-                            src: ipv6.get_source(),
-                            src_mac: ethernet.get_source(),
-                            target: na.get_target_addr(),
-                        })
+                    .map(|na| NdpPacket::NeighborAdvertisement {
+                        src: ipv6.get_source(),
+                        src_mac: ethernet.get_source(),
+                        target: na.get_target_addr(),
                     }),
                 Icmpv6Types::NeighborSolicit => {
                     pnet_ndp::NeighborSolicitPacket::new(ipv6.payload()).and_then(|ns| {
-                        if let Some(src_mac) = extract_ndp_mac(
-                            &ns.get_options(),
-                            pnet_ndp::NdpOptionTypes::SourceLLAddr,
-                        ) {
-                            Some(NdpPacket::NeighborSolicitation {
+                        extract_ndp_mac(&ns.get_options(), pnet_ndp::NdpOptionTypes::SourceLLAddr)
+                            .map(|src_mac| NdpPacket::NeighborSolicitation {
                                 src: ipv6.get_source(),
                                 target: ns.get_target_addr(),
                                 src_mac,
                             })
-                        } else {
-                            None
-                        }
                     })
                 }
                 Icmpv6Types::RouterAdvert => pnet_ndp::RouterAdvertPacket::new(ipv6.payload())
                     .and_then(|ra| {
-                        if let Some(src_mac) = extract_ndp_mac(
-                            &ra.get_options(),
-                            pnet_ndp::NdpOptionTypes::SourceLLAddr,
-                        ) {
-                            return Some(NdpPacket::RouterAdvertisement {
+                        extract_ndp_mac(&ra.get_options(), pnet_ndp::NdpOptionTypes::SourceLLAddr)
+                            .map(|src_mac| NdpPacket::RouterAdvertisement {
                                 src: ipv6.get_source(),
                                 src_mac,
                                 prefixes: extract_ndp_prefixes(&ra.get_options()),
-                            });
-                        } else {
-                            None
-                        }
+                            })
                     }),
                 Icmpv6Types::RouterSolicit => pnet_ndp::RouterSolicitPacket::new(ipv6.payload())
-                    .and_then(|_rs| {
-                        Some(NdpPacket::RouterSolicitation {
-                            src: ipv6.get_source(),
-                            src_mac: ethernet.get_source(),
-                        })
+                    .map(|_rs| NdpPacket::RouterSolicitation {
+                        src: ipv6.get_source(),
+                        src_mac: ethernet.get_source(),
                     }),
                 _ => None,
             })
@@ -229,7 +213,7 @@ fn extract_ndp_packet<'a>(ethernet: &EthernetPacket<'a>) -> Option<NdpPacket> {
 }
 
 fn extract_ndp_mac(
-    options: &Vec<pnet_ndp::NdpOption>,
+    options: &[pnet_ndp::NdpOption],
     option_type: pnet_ndp::NdpOptionType,
 ) -> Option<MacAddr> {
     for opt in options {
@@ -241,7 +225,7 @@ fn extract_ndp_mac(
     None
 }
 
-fn extract_ndp_prefixes(options: &Vec<pnet_ndp::NdpOption>) -> Vec<Ipv6Network> {
+fn extract_ndp_prefixes(options: &[pnet_ndp::NdpOption]) -> Vec<Ipv6Network> {
     let mut prefixes = Vec::with_capacity(2);
     for opt in options {
         if opt.option_type == pnet_ndp::NdpOptionTypes::PrefixInformation {

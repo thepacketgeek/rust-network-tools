@@ -29,8 +29,8 @@ impl ArpCache {
         };
 
         Self {
-            entries: entries.clone(),
-            pending_requests: requests.clone(),
+            entries,
+            pending_requests: requests,
             _background: monitor,
         }
     }
@@ -63,7 +63,7 @@ impl ArpCache {
     pub fn get(&self, addr: Ipv4Addr, timeout: Duration) -> Option<MacAddr> {
         let maybe_mac = {
             let entries = self.entries.lock().unwrap();
-            entries.get(&addr).map(|m| *m)
+            entries.get(&addr).copied()
         };
         if let Some(mac) = maybe_mac {
             Some(mac)
@@ -99,23 +99,20 @@ fn run_arp_monitor(
             if *request_sent {
                 continue;
             }
-            if let Ok(_) = monitor.send_request(*pending) {
+            if monitor.send_request(*pending).is_ok() {
                 *request_sent = true;
             }
         }
         if let Some(packet) = monitor.next() {
-            match packet.get_operation() {
-                ArpOperations::Reply => {
-                    // Check to see if this is the reply to a pending request
-                    let mut requests = pending_requests.lock().unwrap();
-                    if let Some((ip, _)) = requests.remove_entry(&packet.get_sender_proto_addr()) {
-                        entries
-                            .lock()
-                            .unwrap()
-                            .insert(ip, packet.get_sender_hw_addr());
-                    }
+            if packet.get_operation() == ArpOperations::Reply {
+                // Check to see if this is the reply to a pending request
+                let mut requests = pending_requests.lock().unwrap();
+                if let Some((ip, _)) = requests.remove_entry(&packet.get_sender_proto_addr()) {
+                    entries
+                        .lock()
+                        .unwrap()
+                        .insert(ip, packet.get_sender_hw_addr());
                 }
-                _ => (),
             }
         }
     }
