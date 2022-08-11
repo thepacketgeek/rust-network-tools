@@ -62,11 +62,11 @@ impl Routes {
 
         let arp_caches = ifaces
             .iter()
-            .map(|(name, iface)| (name.clone(), ArpCache::new(&iface)))
+            .map(|(name, iface)| (name.clone(), ArpCache::new(iface)))
             .collect();
         let ndp_caches = ifaces
             .iter()
-            .map(|(name, iface)| (name.clone(), NdpCache::new(&iface)))
+            .map(|(name, iface)| (name.clone(), NdpCache::new(iface)))
             .collect();
 
         Ok(Self {

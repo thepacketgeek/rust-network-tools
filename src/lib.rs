@@ -37,7 +37,7 @@ impl IpType {
 
 /// Resolve a hostname (can be an Ip address) to the first matching IP of the given type
 pub fn resolve_host(host: &str, version: IpType) -> Result<IpAddr> {
-    let ips = lookup_host(&host)?;
+    let ips = lookup_host(host)?;
 
     for ip in ips {
         if version.matches(ip) {

@@ -26,7 +26,7 @@ pub struct ArpMonitor {
 impl ArpMonitor {
     /// Create a new ArpMonitor for a given interface
     pub fn new(interface: &NetworkInterface) -> io::Result<Self> {
-        let (tx, rx) = match datalink::channel(&interface, Default::default())? {
+        let (tx, rx) = match datalink::channel(interface, Default::default())? {
             Channel::Ethernet(tx, rx) => (tx, rx),
             _ => {
                 // Only Channel::Ethernet is supported currently
@@ -57,7 +57,7 @@ impl ArpMonitor {
     }
 }
 
-impl<'a> Iterator for ArpMonitor {
+impl Iterator for ArpMonitor {
     type Item = ArpPacket<'static>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -94,7 +94,7 @@ impl<'a> ArpRequest<'a> {
 
     /// Start the ARP Request/Reply process
     pub fn request(&self) -> io::Result<datalink::MacAddr> {
-        let (mut tx, mut rx) = match datalink::channel(&self.interface, Default::default())? {
+        let (mut tx, mut rx) = match datalink::channel(self.interface, Default::default())? {
             Channel::Ethernet(tx, rx) => (tx, rx),
             _ => {
                 return Err(io::Error::new(
@@ -105,7 +105,7 @@ impl<'a> ArpRequest<'a> {
         };
 
         // Build and Send an ARP Request
-        let request = build_request(&self.interface, self.address)?;
+        let request = build_request(self.interface, self.address)?;
         // Send the packet bytes via the `tx` Channel for our interface
         match tx.send_to(request.packet(), None) {
             Some(Ok(_)) => {
@@ -124,7 +124,7 @@ impl<'a> ArpRequest<'a> {
         while let Ok(data) = rx.next() {
             if let Some(packet) = EthernetPacket::new(data) {
                 if packet.get_ethertype() == EtherType(0x0806) {
-                    if let Some(arp) = ArpPacket::new(&packet.payload()) {
+                    if let Some(arp) = ArpPacket::new(packet.payload()) {
                         if arp.get_operation() == ArpOperations::Reply {
                             // Check to see if this is the reply to our request
                             if arp.get_sender_proto_addr() == self.address {
@@ -152,7 +152,7 @@ pub fn build_request(
     let hw_addr = interface
         .mac
         .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "No MAC Address present"))?;
-    let source_ip = find_ipv4_addr(&interface).ok_or_else(|| {
+    let source_ip = find_ipv4_addr(interface).ok_or_else(|| {
         io::Error::new(io::ErrorKind::AddrNotAvailable, "No IPv4 Address present")
     })?;
 
